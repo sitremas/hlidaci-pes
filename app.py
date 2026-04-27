@@ -87,91 +87,146 @@ def send_telegram(message):
 # TICKETSWAP SCRAPING
 # ──────────────────────────────────────────────
 
-def extract_slug_from_url(url):
-    url = url.rstrip('/')
-    match = re.search(r'ticketswap\.[a-z]+/event/([^?#]+)', url)
-    if match:
-        return match.group(1)
-    return None
+def extract_ids_from_url(url):
+    """Parse UUID, numeric ID, and slug from a TicketSwap URL."""
+    clean = url.split('?')[0].rstrip('/')
+    uuid_match = re.search(
+        r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', clean
+    )
+    uuid = uuid_match.group(1) if uuid_match else None
+    num_match = re.search(r'/(\d{4,})(?:/|$)', clean)
+    numeric_id = num_match.group(1) if num_match else None
+    slug_match = re.search(r'/event/([^?#]+)', clean)
+    full_slug = slug_match.group(1) if slug_match else None
+    event_slug = full_slug.split('/')[0] if full_slug else None
+    return uuid, numeric_id, full_slug, event_slug
 
-def fetch_via_graphql(url):
-    """Try TicketSwap GraphQL API."""
-    slug = extract_slug_from_url(url)
-    if not slug:
-        return None, None
+def parse_listings_from_edges(edges, fallback_url):
+    listings = []
+    for edge in edges:
+        node = edge.get('node', {})
+        listing_id = str(node.get('id', ''))
+        num_tickets = node.get('numberOfTicketsInListing', 1)
+        price_obj = node.get('price', {}).get('totalPriceWithTransactionFee', {})
+        amount = price_obj.get('amount')
+        currency = price_obj.get('currency', 'EUR')
+        if amount is None:
+            continue
+        try:
+            price = float(amount) / 100
+        except:
+            price = float(amount)
+        listing_url = node.get('uri', '') or fallback_url
+        if listing_url and not listing_url.startswith('http'):
+            listing_url = 'https://www.ticketswap.com' + listing_url
+        listings.append({
+            'id': listing_id, 'price': price, 'currency': currency,
+            'num_tickets': num_tickets, 'url': listing_url
+        })
+    return listings
 
-    query = """
-    query GetAvailableListings($slug: String!) {
-      event(slug: $slug) {
-        id
-        title
-        listings(first: 20, status: AVAILABLE) {
-          edges {
-            node {
-              id
-              numberOfTicketsInListing
-              uri
-              price {
-                totalPriceWithTransactionFee {
-                  amount
-                  currency
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-    """
+def gql_post(query, variables):
     try:
         resp = requests.post(
             'https://api.ticketswap.com/graphql/public',
             headers=GQL_HEADERS,
-            json={'query': query, 'variables': {'slug': slug}},
+            json={'query': query, 'variables': variables},
             timeout=15
         )
+        print(f"  GQL status: {resp.status_code}")
         if not resp.ok:
-            return None, None
-
+            return None
         data = resp.json()
-        event = data.get('data', {}).get('event')
-        if not event:
-            return None, None
-
-        event_name = event.get('title', 'TicketSwap Event')
-        listings = []
-
-        for edge in event.get('listings', {}).get('edges', []):
-            node = edge.get('node', {})
-            listing_id = str(node.get('id', ''))
-            num_tickets = node.get('numberOfTicketsInListing', 1)
-            price_obj = node.get('price', {}).get('totalPriceWithTransactionFee', {})
-            amount = price_obj.get('amount')
-            currency = price_obj.get('currency', 'EUR')
-
-            if amount is not None:
-                try:
-                    price = float(amount) / 100
-                except:
-                    price = float(amount)
-
-                listing_url = node.get('uri', '')
-                if listing_url and not listing_url.startswith('http'):
-                    listing_url = 'https://www.ticketswap.com' + listing_url
-
-                listings.append({
-                    'id': listing_id,
-                    'price': price,
-                    'currency': currency,
-                    'num_tickets': num_tickets,
-                    'url': listing_url
-                })
-
-        return event_name, listings
-
+        if data.get('errors'):
+            print(f"  GQL errors: {data['errors']}")
+        return data.get('data')
     except Exception as e:
-        print(f"GraphQL error: {e}")
-        return None, None
+        print(f"  GQL exception: {e}")
+        return None
+
+LISTING_FIELDS = """
+fragment LF on PublicListing {
+  id
+  numberOfTicketsInListing
+  uri
+  price { totalPriceWithTransactionFee { amount currency } }
+}
+"""
+
+def fetch_via_graphql(url):
+    """Try multiple GraphQL strategies based on URL structure."""
+    uuid, numeric_id, full_slug, event_slug = extract_ids_from_url(url)
+    print(f"  Parsed → uuid={uuid} numeric_id={numeric_id} event_slug={event_slug}")
+
+    import base64
+
+    # Strategy 1: EventType node by Relay ID (UUID)
+    if uuid:
+        relay_id = base64.b64encode(f"EventType:{uuid}".encode()).decode()
+        data = gql_post(LISTING_FIELDS + """
+        query S1($id: ID!) {
+          node(id: $id) {
+            ... on EventType {
+              id title
+              listings(first: 20, status: AVAILABLE) {
+                edges { node { ...LF } }
+              }
+            }
+          }
+        }""", {'id': relay_id})
+        if data:
+            node = (data.get('node') or {})
+            edges = node.get('listings', {}).get('edges', [])
+            if edges is not None:
+                listings = parse_listings_from_edges(edges, url)
+                print(f"  Strategy 1 OK: {len(listings)} listings")
+                return node.get('title', 'TicketSwap Event'), listings
+
+    # Strategy 2: eventType by numeric ID
+    if numeric_id:
+        data = gql_post(LISTING_FIELDS + """
+        query S2($id: Int!) {
+          eventType(id: $id) {
+            id title
+            listings(first: 20, status: AVAILABLE) {
+              edges { node { ...LF } }
+            }
+          }
+        }""", {'id': int(numeric_id)})
+        if data:
+            et = data.get('eventType') or {}
+            edges = et.get('listings', {}).get('edges', [])
+            if edges is not None:
+                listings = parse_listings_from_edges(edges, url)
+                print(f"  Strategy 2 OK: {len(listings)} listings")
+                return et.get('title', 'TicketSwap Event'), listings
+
+    # Strategy 3: event by short slug → all eventTypes
+    if event_slug:
+        data = gql_post(LISTING_FIELDS + """
+        query S3($slug: String!) {
+          event(slug: $slug) {
+            id title
+            eventTypes {
+              id title
+              listings(first: 20, status: AVAILABLE) {
+                edges { node { ...LF } }
+              }
+            }
+          }
+        }""", {'slug': event_slug})
+        if data:
+            ev = data.get('event') or {}
+            name = ev.get('title', 'TicketSwap Event')
+            all_listings = []
+            for et in (ev.get('eventTypes') or []):
+                edges = et.get('listings', {}).get('edges', [])
+                all_listings.extend(parse_listings_from_edges(edges, url))
+            if ev.get('eventTypes') is not None:
+                print(f"  Strategy 3 OK: {len(all_listings)} listings")
+                return name, all_listings
+
+    return None, None
 
 def fetch_via_next_data(url):
     """Try to extract listings from Next.js __NEXT_DATA__ embedded JSON."""
@@ -200,34 +255,7 @@ def fetch_via_next_data(url):
             []
         )
 
-        listings = []
-        for edge in raw_listings:
-            node = edge.get('node', edge)
-            listing_id = str(node.get('id', ''))
-            num_tickets = node.get('numberOfTicketsInListing', 1)
-            price_obj = node.get('price', {})
-            fee_obj = price_obj.get('totalPriceWithTransactionFee') or price_obj.get('originalPrice') or {}
-            amount = fee_obj.get('amount')
-            currency = fee_obj.get('currency', 'EUR')
-
-            if amount is not None:
-                try:
-                    price = float(amount) / 100
-                except:
-                    price = float(amount)
-
-                listing_url = node.get('uri') or node.get('url') or url
-                if listing_url and not listing_url.startswith('http'):
-                    listing_url = 'https://www.ticketswap.com' + listing_url
-
-                listings.append({
-                    'id': listing_id,
-                    'price': price,
-                    'currency': currency,
-                    'num_tickets': num_tickets,
-                    'url': listing_url
-                })
-
+        listings = parse_listings_from_edges(raw_listings, url)
         return event_name, listings
 
     except Exception as e:
