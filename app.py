@@ -3,12 +3,25 @@ from datetime import datetime
 from flask import Flask, request, jsonify, render_template
 from apscheduler.schedulers.background import BackgroundScheduler
 import requests
-from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 DATABASE = os.environ.get('DATABASE_PATH', 'tracker.db')
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
+
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'cs-CZ,cs;q=0.9,en;q=0.8',
+}
+
+GQL_HEADERS = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/json',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'Origin': 'https://www.ticketswap.com',
+    'Referer': 'https://www.ticketswap.com/',
+}
 
 # ──────────────────────────────────────────────
 # DATABASE
@@ -21,23 +34,34 @@ def get_db():
 
 def init_db():
     with get_db() as conn:
-        conn.execute('''CREATE TABLE IF NOT EXISTS items (
+        conn.execute('''CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             url TEXT NOT NULL,
             name TEXT NOT NULL,
-            selector TEXT,
-            current_price REAL,
-            target_price REAL,
-            currency TEXT DEFAULT 'Kč',
+            max_price REAL,
+            currency TEXT DEFAULT 'EUR',
             last_checked TEXT,
             created_at TEXT,
             active INTEGER DEFAULT 1
         )''')
-        conn.execute('''CREATE TABLE IF NOT EXISTS price_history (
+        conn.execute('''CREATE TABLE IF NOT EXISTS seen_listings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            item_id INTEGER,
+            event_id INTEGER NOT NULL,
+            listing_id TEXT NOT NULL,
             price REAL,
-            checked_at TEXT
+            num_tickets INTEGER,
+            listing_url TEXT,
+            found_at TEXT,
+            UNIQUE(event_id, listing_id)
+        )''')
+        conn.execute('''CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id INTEGER NOT NULL,
+            listing_id TEXT,
+            price REAL,
+            num_tickets INTEGER,
+            listing_url TEXT,
+            sent_at TEXT
         )''')
 
 # ──────────────────────────────────────────────
@@ -46,193 +70,234 @@ def init_db():
 
 def send_telegram(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram not configured, skipping notification")
+        print("Telegram not configured")
         return False
-    url = f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage'
     try:
-        r = requests.post(url, json={
-            'chat_id': TELEGRAM_CHAT_ID,
-            'text': message,
-            'parse_mode': 'HTML'
-        }, timeout=10)
+        r = requests.post(
+            f'https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage',
+            json={'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'HTML'},
+            timeout=10
+        )
         return r.ok
     except Exception as e:
         print(f"Telegram error: {e}")
         return False
 
 # ──────────────────────────────────────────────
-# SCRAPING
+# TICKETSWAP SCRAPING
 # ──────────────────────────────────────────────
 
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    'Accept-Language': 'cs-CZ,cs;q=0.9,en;q=0.8',
-    'Accept-Encoding': 'gzip, deflate',
-    'Connection': 'keep-alive',
-}
-
-def parse_price_text(text):
-    """Extract float price from text like '1 299 Kč' or '1,299.00'"""
-    text = text.replace('\xa0', ' ').replace('\u202f', ' ').strip()
-    # Remove currency symbols, keep digits, spaces, commas, dots
-    cleaned = re.sub(r'[^\d\s,.]', '', text)
-    # Try to find price pattern
-    matches = re.findall(r'[\d]+(?:[\s][\d]{3})*(?:[,.][\d]{1,2})?', cleaned)
-    for m in matches:
-        try:
-            val = float(m.replace(' ', '').replace(',', '.'))
-            if 1 < val < 10_000_000:
-                return val
-        except:
-            pass
+def extract_slug_from_url(url):
+    url = url.rstrip('/')
+    match = re.search(r'ticketswap\.[a-z]+/event/([^?#]+)', url)
+    if match:
+        return match.group(1)
     return None
 
-def scrape_page(url, custom_selector=None):
-    """Scrape a URL and return list of found products with prices."""
+def fetch_via_graphql(url):
+    """Try TicketSwap GraphQL API."""
+    slug = extract_slug_from_url(url)
+    if not slug:
+        return None, None
+
+    query = """
+    query GetAvailableListings($slug: String!) {
+      event(slug: $slug) {
+        id
+        title
+        listings(first: 20, status: AVAILABLE) {
+          edges {
+            node {
+              id
+              numberOfTicketsInListing
+              uri
+              price {
+                totalPriceWithTransactionFee {
+                  amount
+                  currency
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+    try:
+        resp = requests.post(
+            'https://api.ticketswap.com/graphql/public',
+            headers=GQL_HEADERS,
+            json={'query': query, 'variables': {'slug': slug}},
+            timeout=15
+        )
+        if not resp.ok:
+            return None, None
+
+        data = resp.json()
+        event = data.get('data', {}).get('event')
+        if not event:
+            return None, None
+
+        event_name = event.get('title', 'TicketSwap Event')
+        listings = []
+
+        for edge in event.get('listings', {}).get('edges', []):
+            node = edge.get('node', {})
+            listing_id = str(node.get('id', ''))
+            num_tickets = node.get('numberOfTicketsInListing', 1)
+            price_obj = node.get('price', {}).get('totalPriceWithTransactionFee', {})
+            amount = price_obj.get('amount')
+            currency = price_obj.get('currency', 'EUR')
+
+            if amount is not None:
+                try:
+                    price = float(amount) / 100
+                except:
+                    price = float(amount)
+
+                listing_url = node.get('uri', '')
+                if listing_url and not listing_url.startswith('http'):
+                    listing_url = 'https://www.ticketswap.com' + listing_url
+
+                listings.append({
+                    'id': listing_id,
+                    'price': price,
+                    'currency': currency,
+                    'num_tickets': num_tickets,
+                    'url': listing_url
+                })
+
+        return event_name, listings
+
+    except Exception as e:
+        print(f"GraphQL error: {e}")
+        return None, None
+
+def fetch_via_next_data(url):
+    """Try to extract listings from Next.js __NEXT_DATA__ embedded JSON."""
     try:
         resp = requests.get(url, headers=HEADERS, timeout=20)
-        resp.raise_for_status()
+        match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', resp.text, re.DOTALL)
+        if not match:
+            return None, None
+
+        data = json.loads(match.group(1))
+        props = data.get('props', {}).get('pageProps', {})
+
+        event_data = (
+            props.get('event') or
+            props.get('eventData') or
+            props.get('initialData', {}).get('event') or
+            {}
+        )
+
+        event_name = event_data.get('title') or event_data.get('name') or 'TicketSwap Event'
+
+        raw_listings = (
+            event_data.get('listings', {}).get('edges', []) or
+            event_data.get('availableListings', {}).get('edges', []) or
+            props.get('listings', {}).get('edges', []) or
+            []
+        )
+
+        listings = []
+        for edge in raw_listings:
+            node = edge.get('node', edge)
+            listing_id = str(node.get('id', ''))
+            num_tickets = node.get('numberOfTicketsInListing', 1)
+            price_obj = node.get('price', {})
+            fee_obj = price_obj.get('totalPriceWithTransactionFee') or price_obj.get('originalPrice') or {}
+            amount = fee_obj.get('amount')
+            currency = fee_obj.get('currency', 'EUR')
+
+            if amount is not None:
+                try:
+                    price = float(amount) / 100
+                except:
+                    price = float(amount)
+
+                listing_url = node.get('uri') or node.get('url') or url
+                if listing_url and not listing_url.startswith('http'):
+                    listing_url = 'https://www.ticketswap.com' + listing_url
+
+                listings.append({
+                    'id': listing_id,
+                    'price': price,
+                    'currency': currency,
+                    'num_tickets': num_tickets,
+                    'url': listing_url
+                })
+
+        return event_name, listings
+
     except Exception as e:
-        raise Exception(f"Nepodařilo se načíst stránku: {e}")
+        print(f"Next.js extraction error: {e}")
+        return None, None
 
-    soup = BeautifulSoup(resp.text, 'html.parser')
-    results = []
-    seen_prices = set()
+def fetch_event_info(url):
+    """Fetch event name and listings, trying multiple methods."""
+    name, listings = fetch_via_graphql(url)
+    if listings is not None:
+        print(f"GraphQL OK: {len(listings)} listings")
+        return name, listings
 
-    def add_result(name, price, selector, raw=''):
-        if price and price not in seen_prices and 1 < price < 10_000_000:
-            seen_prices.add(price)
-            results.append({
-                'name': (name or 'Produkt')[:120],
-                'price': price,
-                'selector': selector,
-                'raw': raw
-            })
+    name, listings = fetch_via_next_data(url)
+    if listings is not None:
+        print(f"Next.js OK: {len(listings)} listings")
+        return name, listings
 
-    # 1. JSON-LD schema.org
-    for script in soup.find_all('script', type='application/ld+json'):
-        try:
-            data = json.loads(script.string or '{}')
-            if isinstance(data, list):
-                data = data[0] if data else {}
-            items_to_check = []
-            if data.get('@type') == 'Product':
-                items_to_check = [data]
-            elif data.get('@type') == 'ItemList':
-                items_to_check = [e.get('item', e) for e in data.get('itemListElement', [])]
-            for item in items_to_check:
-                offers = item.get('offers', {})
-                if isinstance(offers, list): offers = offers[0] if offers else {}
-                price = offers.get('price') or offers.get('lowPrice')
-                name = item.get('name', '')
-                if price:
-                    add_result(name, float(str(price).replace(',', '.')), 'json-ld', str(price))
-        except:
-            pass
-
-    # 2. Meta tags
-    for prop in ['product:price:amount', 'og:price:amount']:
-        tag = soup.find('meta', property=prop)
-        if tag:
-            price = parse_price_text(tag.get('content', ''))
-            name_tag = soup.find('meta', property='og:title') or soup.find('title')
-            name = ''
-            if name_tag:
-                name = name_tag.get('content') or (name_tag.string or '')
-            add_result(name, price, 'meta-tag', tag.get('content', ''))
-
-    # 3. itemprop
-    for elem in soup.find_all(itemprop='price'):
-        raw = elem.get('content') or elem.get_text()
-        price = parse_price_text(raw)
-        name_elem = soup.find(itemprop='name')
-        name = name_elem.get_text(strip=True) if name_elem else ''
-        add_result(name, price, 'itemprop', raw)
-
-    # 4. Custom CSS selector (user-specified)
-    if custom_selector:
-        for elem in soup.select(custom_selector)[:5]:
-            raw = elem.get_text(strip=True)
-            price = parse_price_text(raw)
-            h1 = soup.find('h1')
-            name = h1.get_text(strip=True) if h1 else 'Produkt'
-            add_result(name, price, custom_selector, raw)
-
-    # 5. Common price CSS selectors (fallback)
-    if not results:
-        selectors = [
-            '.price-box__price', '.product-price__value', '.c-price__main',
-            '.price--main', '.price_color', '.now-price', '.price-now',
-            '[class*="price"][class*="final"]', '[class*="price"][class*="current"]',
-            '[class*="price"][class*="sale"]', '.price-tag', '.price__value',
-            '.cena', '.product__cena', '#price', '.Price', '.price',
-            '[data-price]', '[data-testid*="price"]',
-        ]
-        h1 = soup.find('h1')
-        name = h1.get_text(strip=True) if h1 else 'Produkt'
-        for sel in selectors:
-            for elem in soup.select(sel)[:3]:
-                raw = elem.get('data-price') or elem.get_text(strip=True)
-                price = parse_price_text(raw)
-                if price:
-                    add_result(name, price, sel, raw)
-            if results:
-                break
-
-    return results
+    raise Exception("Nepodařilo se načíst data z TicketSwap. Zkontroluj URL.")
 
 # ──────────────────────────────────────────────
-# SCHEDULED CHECKS
+# SCHEDULER
 # ──────────────────────────────────────────────
 
-def check_all_items():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Running scheduled price check...")
+def check_all_events():
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Checking TicketSwap...")
     with get_db() as conn:
-        items = conn.execute('SELECT * FROM items WHERE active=1').fetchall()
-        for item in items:
+        events = conn.execute('SELECT * FROM events WHERE active=1').fetchall()
+        for event in events:
             try:
-                results = scrape_page(item['url'], item['selector'])
-                if not results:
-                    continue
-                new_price = results[0]['price']
-                old_price = item['current_price']
+                _, listings = fetch_event_info(event['url'])
                 now = datetime.now().isoformat()
+                conn.execute('UPDATE events SET last_checked=? WHERE id=?', (now, event['id']))
 
-                conn.execute('UPDATE items SET current_price=?, last_checked=? WHERE id=?',
-                             (new_price, now, item['id']))
-                conn.execute('INSERT INTO price_history (item_id, price, checked_at) VALUES (?,?,?)',
-                             (item['id'], new_price, now))
+                max_price = event['max_price']
 
-                cur = item['currency'] or 'Kč'
+                for lst in listings:
+                    existing = conn.execute(
+                        'SELECT id FROM seen_listings WHERE event_id=? AND listing_id=?',
+                        (event['id'], lst['id'])
+                    ).fetchone()
 
-                if old_price and new_price < old_price:
-                    diff = old_price - new_price
-                    pct = diff / old_price * 100
-                    msg = (
-                        f"🐕 <b>Hlídací pes — cena klesla!</b>\n\n"
-                        f"📦 <b>{item['name']}</b>\n"
-                        f"Stará cena: {old_price:,.0f} {cur}\n"
-                        f"Nová cena: <b>{new_price:,.0f} {cur}</b>\n"
-                        f"Úspora: {diff:,.0f} {cur} ({pct:.1f} %)\n\n"
-                        f"🔗 <a href='{item['url']}'>Přejít na produkt</a>"
-                    )
-                    send_telegram(msg)
-                    print(f"  Price drop: {item['name']} {old_price}→{new_price}")
+                    if existing:
+                        continue
 
-                target = item['target_price']
-                if target and new_price <= target:
-                    msg = (
-                        f"🎯 <b>Cílová cena dosažena!</b>\n\n"
-                        f"📦 <b>{item['name']}</b>\n"
-                        f"Aktuální cena: <b>{new_price:,.0f} {cur}</b>\n"
-                        f"Tvoje cílová cena: {target:,.0f} {cur}\n\n"
-                        f"🔗 <a href='{item['url']}'>Přejít na produkt</a>"
-                    )
-                    send_telegram(msg)
+                    conn.execute('''
+                        INSERT OR IGNORE INTO seen_listings
+                        (event_id, listing_id, price, num_tickets, listing_url, found_at)
+                        VALUES (?,?,?,?,?,?)
+                    ''', (event['id'], lst['id'], lst['price'], lst['num_tickets'], lst['url'], now))
+
+                    if max_price is None or lst['price'] <= max_price:
+                        cur = lst.get('currency', 'EUR')
+                        msg = (
+                            f"🎟 <b>Nový lístek na TicketSwap!</b>\n\n"
+                            f"🎪 <b>{event['name']}</b>\n"
+                            f"💰 Cena: <b>{lst['price']:.2f} {cur}</b>\n"
+                            f"🎫 Počet lístků: {lst['num_tickets']}\n"
+                            + (f"🎯 Tvůj limit: {max_price:.2f} {cur}\n" if max_price else "")
+                            + f"\n🔗 <a href='{lst['url']}'>Koupit lístek</a>"
+                        )
+                        send_telegram(msg)
+                        conn.execute('''
+                            INSERT INTO notifications (event_id, listing_id, price, num_tickets, listing_url, sent_at)
+                            VALUES (?,?,?,?,?,?)
+                        ''', (event['id'], lst['id'], lst['price'], lst['num_tickets'], lst['url'], now))
+                        print(f"  Notified: {event['name']} — {lst['price']} {cur}")
 
             except Exception as e:
-                print(f"  Error checking {item['url']}: {e}")
+                print(f"  Error checking {event['url']}: {e}")
 
 # ──────────────────────────────────────────────
 # ROUTES
@@ -246,71 +311,85 @@ def index():
 def health():
     return 'OK', 200
 
-@app.route('/api/scrape', methods=['POST'])
-def api_scrape():
+@app.errorhandler(Exception)
+def handle_exception(e):
+    return jsonify({'error': str(e)}), 500
+
+@app.route('/api/preview', methods=['POST'])
+def api_preview():
     data = request.get_json() or {}
     url = (data.get('url') or '').strip()
     if not url:
         return jsonify({'error': 'URL je povinná'}), 400
-    if not url.startswith('http'):
-        url = 'https://' + url
     try:
-        products = scrape_page(url)
-        return jsonify({'products': products, 'url': url})
+        name, listings = fetch_event_info(url)
+        cheapest = min(listings, key=lambda x: x['price']) if listings else None
+        return jsonify({
+            'name': name,
+            'total_listings': len(listings),
+            'cheapest': cheapest,
+            'listings': listings[:5]
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/items', methods=['GET'])
-def api_get_items():
+@app.route('/api/events', methods=['GET'])
+def api_get_events():
     with get_db() as conn:
-        rows = conn.execute(
-            'SELECT * FROM items WHERE active=1 ORDER BY created_at DESC'
-        ).fetchall()
-        return jsonify([dict(r) for r in rows])
+        rows = conn.execute('SELECT * FROM events WHERE active=1 ORDER BY created_at DESC').fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d['notification_count'] = conn.execute(
+                'SELECT COUNT(*) FROM notifications WHERE event_id=?', (r['id'],)
+            ).fetchone()[0]
+            d['seen_count'] = conn.execute(
+                'SELECT COUNT(*) FROM seen_listings WHERE event_id=?', (r['id'],)
+            ).fetchone()[0]
+            result.append(d)
+        return jsonify(result)
 
-@app.route('/api/items', methods=['POST'])
-def api_add_item():
+@app.route('/api/events', methods=['POST'])
+def api_add_event():
     data = request.get_json() or {}
-    required = ['url', 'name', 'price']
-    for f in required:
-        if not data.get(f):
-            return jsonify({'error': f'Chybí pole: {f}'}), 400
+    if not data.get('url') or not data.get('name'):
+        return jsonify({'error': 'Chybí url nebo name'}), 400
     with get_db() as conn:
         conn.execute('''
-            INSERT INTO items (url, name, selector, current_price, target_price, currency, last_checked, created_at)
-            VALUES (?,?,?,?,?,?,?,?)
+            INSERT INTO events (url, name, max_price, currency, last_checked, created_at)
+            VALUES (?,?,?,?,?,?)
         ''', (
-            data['url'], data['name'], data.get('selector'),
-            float(data['price']),
-            float(data['target_price']) if data.get('target_price') else None,
-            data.get('currency', 'Kč'),
-            datetime.now().isoformat(), datetime.now().isoformat()
+            data['url'], data['name'],
+            float(data['max_price']) if data.get('max_price') else None,
+            data.get('currency', 'EUR'),
+            datetime.now().isoformat(),
+            datetime.now().isoformat()
         ))
     return jsonify({'ok': True})
 
-@app.route('/api/items/<int:item_id>', methods=['DELETE'])
-def api_delete_item(item_id):
+@app.route('/api/events/<int:event_id>', methods=['DELETE'])
+def api_delete_event(event_id):
     with get_db() as conn:
-        conn.execute('UPDATE items SET active=0 WHERE id=?', (item_id,))
+        conn.execute('UPDATE events SET active=0 WHERE id=?', (event_id,))
     return jsonify({'ok': True})
 
-@app.route('/api/items/<int:item_id>/history', methods=['GET'])
-def api_item_history(item_id):
+@app.route('/api/events/<int:event_id>/notifications', methods=['GET'])
+def api_event_notifications(event_id):
     with get_db() as conn:
         rows = conn.execute(
-            'SELECT * FROM price_history WHERE item_id=? ORDER BY checked_at DESC LIMIT 30',
-            (item_id,)
+            'SELECT * FROM notifications WHERE event_id=? ORDER BY sent_at DESC LIMIT 20',
+            (event_id,)
         ).fetchall()
         return jsonify([dict(r) for r in rows])
 
 @app.route('/api/check-now', methods=['POST'])
 def api_check_now():
-    check_all_items()
+    check_all_events()
     return jsonify({'ok': True})
 
 @app.route('/api/test-telegram', methods=['POST'])
 def api_test_telegram():
-    ok = send_telegram("🐕 Hlídací pes je aktivní a funguje! Test notifikace.")
+    ok = send_telegram("🎟 TicketSwap hlídač je aktivní! Test notifikace funguje.")
     if ok:
         return jsonify({'ok': True, 'message': 'Zpráva odeslána na Telegram!'})
     return jsonify({'ok': False, 'message': 'Chyba — zkontroluj TELEGRAM_TOKEN a TELEGRAM_CHAT_ID'}), 500
@@ -322,7 +401,7 @@ def api_test_telegram():
 if __name__ == '__main__':
     init_db()
     scheduler = BackgroundScheduler(timezone='Europe/Prague')
-    scheduler.add_job(check_all_items, 'interval', hours=1, id='price_check')
+    scheduler.add_job(check_all_events, 'interval', minutes=5, id='ticketswap_check')
     scheduler.start()
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
