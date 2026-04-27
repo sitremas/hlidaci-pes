@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hlídací Pes 🐕</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0d0f14;
+    --surface: #161920;
+    --surface2: #1e2130;
+    --border: #2a2f45;
+    --accent: #e8ff47;
+    --accent2: #47c8ff;
+    --danger: #ff5959;
+    --success: #47ffa0;
+    --text: #e8eaf0;
+    --muted: #6b7280;
+    --mono: 'Space Mono', monospace;
+    --sans: 'Syne', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* GRID BG */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(232,255,71,.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(232,255,71,.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .wrap { position: relative; z-index: 1; max-width: 900px; margin: 0 auto; padding: 0 20px 80px; }
+
+  /* HEADER */
+  header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 40px 0 32px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 40px;
+  }
+  .logo {
+    font-size: 2.4rem;
+    animation: wag 2s ease-in-out infinite;
+    display: inline-block;
+  }
+  @keyframes wag {
+    0%,100% { transform: rotate(-10deg); }
+    50% { transform: rotate(10deg); }
+  }
+  h1 {
+    font-family: var(--sans);
+    font-weight: 800;
+    font-size: clamp(1.8rem, 4vw, 2.6rem);
+    letter-spacing: -1px;
+    line-height: 1;
+  }
+  h1 span { color: var(--accent); }
+  .subtitle { font-family: var(--mono); font-size: .75rem; color: var(--muted); margin-top: 4px; }
+
+  /* STATUS BAR */
+  .status-bar {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 32px;
+    flex-wrap: wrap;
+  }
+  .status-pill {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 6px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-family: var(--mono);
+    font-size: .72rem;
+    color: var(--muted);
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  .dot.green { background: var(--success); box-shadow: 0 0 6px var(--success); animation: pulse 2s infinite; }
+  .dot.yellow { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+
+  /* CARD */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 28px;
+    margin-bottom: 24px;
+    transition: border-color .2s;
+  }
+  .card:hover { border-color: var(--border); }
+  .card-title {
+    font-family: var(--mono);
+    font-size: .7rem;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: var(--accent);
+    margin-bottom: 20px;
+  }
+
+  /* FORM */
+  .input-group { margin-bottom: 16px; }
+  label { display: block; font-family: var(--mono); font-size: .72rem; color: var(--muted); margin-bottom: 6px; }
+  input, select {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: .85rem;
+    padding: 12px 16px;
+    border-radius: 10px;
+    outline: none;
+    transition: border-color .2s, box-shadow .2s;
+  }
+  input:focus, select:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(232,255,71,.1);
+  }
+  input::placeholder { color: var(--muted); }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 24px;
+    border: none;
+    border-radius: 10px;
+    font-family: var(--mono);
+    font-size: .82rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: transform .15s, opacity .15s;
+  }
+  .btn:hover { transform: translateY(-1px); }
+  .btn:active { transform: translateY(0); }
+  .btn-primary { background: var(--accent); color: #0d0f14; }
+  .btn-secondary { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+  .btn-danger { background: rgba(255,89,89,.15); color: var(--danger); border: 1px solid rgba(255,89,89,.3); }
+  .btn-sm { padding: 7px 14px; font-size: .72rem; }
+  .btn:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+
+  .btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+
+  /* PRODUCT PICKER */
+  #product-picker { display: none; }
+  .product-list { display: flex; flex-direction: column; gap: 10px; margin: 16px 0; }
+  .product-option {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 16px;
+    background: var(--surface2);
+    border: 2px solid var(--border);
+    border-radius: 12px;
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
+  }
+  .product-option:hover { border-color: var(--accent); background: rgba(232,255,71,.05); }
+  .product-option.selected { border-color: var(--accent); background: rgba(232,255,71,.08); }
+  .product-option input[type=radio] { display: none; }
+  .po-name { font-weight: 600; font-size: .9rem; flex: 1; }
+  .po-price {
+    font-family: var(--mono);
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+  .radio-indicator {
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    flex-shrink: 0;
+    transition: all .2s;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .product-option.selected .radio-indicator {
+    border-color: var(--accent);
+    background: var(--accent);
+  }
+  .product-option.selected .radio-indicator::after {
+    content: '';
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: #0d0f14;
+  }
+
+  /* ITEMS TABLE */
+  .items-grid { display: flex; flex-direction: column; gap: 12px; }
+  .item-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+    align-items: start;
+    transition: border-color .2s;
+  }
+  .item-card:hover { border-color: rgba(232,255,71,.3); }
+  .item-name {
+    font-weight: 600;
+    font-size: .95rem;
+    margin-bottom: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .item-url {
+    font-family: var(--mono);
+    font-size: .65rem;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 400px;
+  }
+  .item-meta { display: flex; gap: 16px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+  .price-display {
+    font-family: var(--mono);
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: var(--accent);
+  }
+  .target-display {
+    font-family: var(--mono);
+    font-size: .75rem;
+    color: var(--muted);
+  }
+  .target-display span { color: var(--accent2); }
+  .last-check { font-family: var(--mono); font-size: .65rem; color: var(--muted); }
+  .item-actions { display: flex; gap: 8px; align-items: flex-start; }
+
+  /* HISTORY MODAL */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.7);
+    backdrop-filter: blur(4px);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    padding: 32px;
+    width: min(500px, 92vw);
+    max-height: 80vh;
+    overflow-y: auto;
+  }
+  .modal-title { font-family: var(--mono); font-size: .7rem; color: var(--accent); text-transform: uppercase; letter-spacing: 2px; margin-bottom: 16px; }
+  .history-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: .8rem;
+  }
+  .history-row:last-child { border-bottom: none; }
+  .h-price { color: var(--accent2); font-weight: 700; }
+  .h-date { color: var(--muted); }
+  .modal-close { float: right; }
+
+  /* ALERTS */
+  .alert {
+    padding: 12px 18px;
+    border-radius: 10px;
+    font-family: var(--mono);
+    font-size: .78rem;
+    margin-bottom: 16px;
+    display: none;
+  }
+  .alert.show { display: block; }
+  .alert-success { background: rgba(71,255,160,.1); border: 1px solid rgba(71,255,160,.3); color: var(--success); }
+  .alert-error { background: rgba(255,89,89,.1); border: 1px solid rgba(255,89,89,.3); color: var(--danger); }
+  .alert-info { background: rgba(71,200,255,.1); border: 1px solid rgba(71,200,255,.3); color: var(--accent2); }
+
+  /* SPINNER */
+  .spinner {
+    width: 16px; height: 16px;
+    border: 2px solid rgba(255,255,255,.2);
+    border-top-color: currentColor;
+    border-radius: 50%;
+    animation: spin .6s linear infinite;
+    display: inline-block;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .empty-state {
+    text-align: center;
+    padding: 48px 20px;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: .8rem;
+    line-height: 1.8;
+  }
+  .empty-state .big { font-size: 3rem; margin-bottom: 12px; display: block; }
+
+  /* SECTION HEADER */
+  .section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media(max-width:500px) { .two-col { grid-template-columns: 1fr; } }
+
+  .badge {
+    background: rgba(232,255,71,.15);
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: .65rem;
+    padding: 3px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(232,255,71,.3);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="logo">🐕</div>
+    <div>
+      <h1>Hlídací <span>Pes</span></h1>
+      <div class="subtitle">// price tracker — telegram notifications</div>
+    </div>
+  </header>
+
+  <div class="status-bar">
+    <div class="status-pill"><div class="dot green" id="status-dot"></div><span id="status-text">Aktivní</span></div>
+    <div class="status-pill"><div class="dot yellow"></div><span id="item-count">0 sledovaných</span></div>
+    <button class="btn btn-secondary btn-sm" onclick="checkNow()" id="check-btn">
+      <span>↻</span> Zkontrolovat teď
+    </button>
+    <button class="btn btn-secondary btn-sm" onclick="testTelegram()">
+      📬 Test Telegram
+    </button>
+  </div>
+
+  <!-- ADD PRODUCT -->
+  <div class="card">
+    <div class="card-title">// přidat produkt</div>
+    <div id="alert-add" class="alert"></div>
+
+    <div class="input-group">
+      <label>URL PRODUKTU</label>
+      <input type="url" id="url-input" placeholder="https://www.alza.cz/..." />
+    </div>
+
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="scrapeUrl()" id="scrape-btn">
+        <span id="scrape-icon">🔍</span> Načíst produkt
+      </button>
+    </div>
+
+    <!-- Product picker (shown after scrape) -->
+    <div id="product-picker">
+      <div style="margin-top:20px; font-family:var(--mono); font-size:.72rem; color:var(--muted); margin-bottom:8px;">
+        NALEZENÉ PRODUKTY — vyber, který hlídat:
+      </div>
+      <div class="product-list" id="product-list"></div>
+
+      <div class="two-col" style="margin-top:16px;">
+        <div class="input-group" style="margin:0">
+          <label>CÍLOVÁ CENA (nepovinné)</label>
+          <input type="number" id="target-price" placeholder="1299" />
+        </div>
+        <div class="input-group" style="margin:0">
+          <label>MĚNA</label>
+          <select id="currency-select">
+            <option value="Kč">Kč</option>
+            <option value="€">€</option>
+            <option value="USD">USD</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="btn-row" style="margin-top:16px;">
+        <button class="btn btn-primary" onclick="addItem()" id="add-btn">
+          ✅ Přidat hlídání
+        </button>
+        <button class="btn btn-secondary" onclick="resetForm()">Zrušit</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TRACKED ITEMS -->
+  <div class="section-header">
+    <div style="font-family:var(--mono); font-size:.7rem; text-transform:uppercase; letter-spacing:2px; color:var(--accent);">
+      // sledované produkty
+    </div>
+    <button class="btn btn-secondary btn-sm" onclick="loadItems()">↻ Obnovit</button>
+  </div>
+
+  <div id="alert-main" class="alert"></div>
+  <div id="items-container">
+    <div class="empty-state">
+      <span class="big">🐾</span>
+      Zatím žádné produkty ke hlídání.<br>Přidej první produkt výše!
+    </div>
+  </div>
+
+</div>
+
+<!-- HISTORY MODAL -->
+<div class="modal-overlay" id="history-modal">
+  <div class="modal">
+    <div class="section-header" style="margin-bottom:0">
+      <div class="modal-title" id="modal-product-name">Historie cen</div>
+      <button class="btn btn-secondary btn-sm modal-close" onclick="closeHistory()">✕ Zavřít</button>
+    </div>
+    <div style="margin-top:16px;" id="history-content"></div>
+  </div>
+</div>
+
+<script>
+let selectedProduct = null;
+let scrapedUrl = '';
+
+// ── HELPERS ──────────────────────────────────
+
+function showAlert(id, type, msg) {
+  const el = document.getElementById(id);
+  el.className = `alert alert-${type} show`;
+  el.textContent = msg;
+  setTimeout(() => el.classList.remove('show'), 5000);
+}
+
+function formatPrice(p, cur = 'Kč') {
+  if (!p && p !== 0) return '—';
+  return new Intl.NumberFormat('cs-CZ').format(p) + ' ' + cur;
+}
+
+function formatDate(iso) {
+  if (!iso) return 'nikdy';
+  const d = new Date(iso);
+  return d.toLocaleDateString('cs-CZ') + ' ' + d.toTimeString().slice(0,5);
+}
+
+// ── SCRAPE ───────────────────────────────────
+
+async function scrapeUrl() {
+  const url = document.getElementById('url-input').value.trim();
+  if (!url) { showAlert('alert-add', 'error', 'Zadej URL produktu.'); return; }
+
+  const btn = document.getElementById('scrape-btn');
+  const icon = document.getElementById('scrape-icon');
+  btn.disabled = true;
+  icon.innerHTML = '<span class="spinner"></span>';
+
+  try {
+    const res = await fetch('/api/scrape', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    const data = await res.json();
+
+    if (!res.ok) throw new Error(data.error);
+    if (!data.products || data.products.length === 0) {
+      showAlert('alert-add', 'error', 'Nepodařilo se najít cenu na stránce. Zkus zadat CSS selektor ručně.');
+      return;
+    }
+
+    scrapedUrl = data.url;
+    renderProductPicker(data.products);
+    document.getElementById('product-picker').style.display = 'block';
+
+  } catch(e) {
+    showAlert('alert-add', 'error', e.message);
+  } finally {
+    btn.disabled = false;
+    icon.textContent = '🔍';
+  }
+}
+
+function renderProductPicker(products) {
+  const list = document.getElementById('product-list');
+  list.innerHTML = '';
+  products.forEach((p, i) => {
+    const div = document.createElement('div');
+    div.className = 'product-option' + (i === 0 ? ' selected' : '');
+    div.onclick = () => {
+      document.querySelectorAll('.product-option').forEach(x => x.classList.remove('selected'));
+      div.classList.add('selected');
+      selectedProduct = p;
+    };
+    div.innerHTML = `
+      <div class="radio-indicator"></div>
+      <div class="po-name">${p.name}</div>
+      <div class="po-price">${formatPrice(p.price)}</div>
+    `;
+    list.appendChild(div);
+    if (i === 0) selectedProduct = p;
+  });
+}
+
+// ── ADD ITEM ─────────────────────────────────
+
+async function addItem() {
+  if (!selectedProduct) return;
+
+  const targetRaw = document.getElementById('target-price').value;
+  const currency = document.getElementById('currency-select').value;
+
+  const payload = {
+    url: scrapedUrl,
+    name: selectedProduct.name,
+    selector: selectedProduct.selector,
+    price: selectedProduct.price,
+    target_price: targetRaw ? parseFloat(targetRaw) : null,
+    currency
+  };
+
+  const btn = document.getElementById('add-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Ukládám…';
+
+  try {
+    const res = await fetch('/api/items', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error((await res.json()).error);
+    showAlert('alert-add', 'success', `✅ "${selectedProduct.name}" přidán ke sledování!`);
+    resetForm();
+    loadItems();
+  } catch(e) {
+    showAlert('alert-add', 'error', e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '✅ Přidat hlídání';
+  }
+}
+
+function resetForm() {
+  document.getElementById('url-input').value = '';
+  document.getElementById('product-picker').style.display = 'none';
+  document.getElementById('target-price').value = '';
+  selectedProduct = null;
+  scrapedUrl = '';
+}
+
+// ── LOAD ITEMS ───────────────────────────────
+
+async function loadItems() {
+  try {
+    const res = await fetch('/api/items');
+    const items = await res.json();
+    renderItems(items);
+    document.getElementById('item-count').textContent = items.length + ' sledovaných';
+  } catch(e) {
+    console.error(e);
+  }
+}
+
+function renderItems(items) {
+  const cont = document.getElementById('items-container');
+  if (!items.length) {
+    cont.innerHTML = `
+      <div class="empty-state">
+        <span class="big">🐾</span>
+        Zatím žádné produkty ke hlídání.<br>Přidej první produkt výše!
+      </div>`;
+    return;
+  }
+
+  const grid = document.createElement('div');
+  grid.className = 'items-grid';
+
+  items.forEach(item => {
+    const card = document.createElement('div');
+    card.className = 'item-card';
+    const cur = item.currency || 'Kč';
+    card.innerHTML = `
+      <div>
+        <div class="item-name" title="${item.name}">${item.name}</div>
+        <div class="item-url">${item.url}</div>
+        <div class="item-meta">
+          <div class="price-display">${formatPrice(item.current_price, cur)}</div>
+          ${item.target_price ? `<div class="target-display">cíl: <span>${formatPrice(item.target_price, cur)}</span></div>` : ''}
+          <div class="last-check">zkontrolováno: ${formatDate(item.last_checked)}</div>
+        </div>
+      </div>
+      <div class="item-actions">
+        <button class="btn btn-secondary btn-sm" onclick="showHistory(${item.id}, '${item.name.replace(/'/g, "\\'")}')">📈</button>
+        <a href="${item.url}" target="_blank" class="btn btn-secondary btn-sm">🔗</a>
+        <button class="btn btn-danger btn-sm" onclick="deleteItem(${item.id})">🗑</button>
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+  cont.innerHTML = '';
+  cont.appendChild(grid);
+}
+
+// ── DELETE ───────────────────────────────────
+
+async function deleteItem(id) {
+  if (!confirm('Opravdu odebrat tento produkt ze sledování?')) return;
+  await fetch(`/api/items/${id}`, { method: 'DELETE' });
+  loadItems();
+}
+
+// ── CHECK NOW ────────────────────────────────
+
+async function checkNow() {
+  const btn = document.getElementById('check-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Kontroluji…';
+  try {
+    await fetch('/api/check-now', { method: 'POST' });
+    showAlert('alert-main', 'success', '✅ Kontrola dokončena!');
+    setTimeout(loadItems, 1000);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<span>↻</span> Zkontrolovat teď';
+  }
+}
+
+// ── TEST TELEGRAM ─────────────────────────────
+
+async function testTelegram() {
+  const res = await fetch('/api/test-telegram', { method: 'POST' });
+  const data = await res.json();
+  showAlert('alert-main', res.ok ? 'success' : 'error', data.message);
+}
+
+// ── HISTORY ──────────────────────────────────
+
+async function showHistory(id, name) {
+  document.getElementById('modal-product-name').textContent = name;
+  document.getElementById('history-content').innerHTML = '<div class="spinner" style="margin:auto;display:block;width:24px;height:24px;border-width:3px"></div>';
+  document.getElementById('history-modal').classList.add('open');
+
+  const res = await fetch(`/api/items/${id}/history`);
+  const history = await res.json();
+
+  if (!history.length) {
+    document.getElementById('history-content').innerHTML = '<div style="color:var(--muted);font-family:var(--mono);font-size:.8rem;text-align:center;padding:24px">Zatím žádná historie</div>';
+    return;
+  }
+
+  document.getElementById('history-content').innerHTML = history.map(h => `
+    <div class="history-row">
+      <span class="h-price">${formatPrice(h.price)}</span>
+      <span class="h-date">${formatDate(h.checked_at)}</span>
+    </div>
+  `).join('');
+}
+
+function closeHistory() {
+  document.getElementById('history-modal').classList.remove('open');
+}
+
+document.getElementById('history-modal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeHistory();
+});
+
+// ── INIT ─────────────────────────────────────
+loadItems();
+</script>
+</body>
+</html>
